@@ -7,6 +7,7 @@ use serde::Deserialize;
 use schemars::JsonSchema;
 use rmcp::{ServerHandler, tool_router, tool_handler, tool};
 use rmcp::handler::server::wrapper::Parameters;
+use common::is_error;
 
 pub struct D3skServer {
     pub last_error: Arc<Mutex<Option<String>>>,
@@ -29,13 +30,13 @@ impl D3skServer {
         self.last_error.lock().unwrap().take().unwrap_or_default()
     }
 
-    fn apply(&self, res: pc::Res) -> String {
+    fn apply(&self, res: common::Res) -> String {
         let (r, e) = res;
         if let Some(msg) = e { self.set_error(msg); }
         r
     }
 
-    fn apply_web(&self, res: web::Res) -> String {
+    fn apply_web(&self, res: common::Res) -> String {
         let (r, e) = res;
         if let Some(msg) = e { self.set_error(msg); }
         r
@@ -46,11 +47,11 @@ impl D3skServer {
 
 impl D3skServer {
     async fn dispatch_tool(&self, name: &str, a: &serde_json::Value) -> String {
-        let gs = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
-        let gi = |k: &str| a.get(k).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let gb = |k: &str| a.get(k).and_then(|v| v.as_bool());
-        let gu = |k: &str| a.get(k).and_then(|v| v.as_u64());
-        let gf = |k: &str| a.get(k).and_then(|v| v.as_f64()).map(|f| f as f32);
+        let gs  = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
+        let gi  = |k: &str| a.get(k).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let gb  = |k: &str| a.get(k).and_then(|v| v.as_bool());
+        let gu  = |k: &str| a.get(k).and_then(|v| v.as_u64());
+        let gf  = |k: &str| a.get(k).and_then(|v| v.as_f64()).map(|f| f as f32);
         let garr = |k: &str| -> Vec<String> {
             a.get(k).and_then(|v| v.as_array())
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
@@ -59,45 +60,46 @@ impl D3skServer {
         let sm = &self.web_sessions;
 
         match name {
-            "get_last_error" => self.take_error(),
-            "screenshot"   => self.apply(pc::screenshot(gs("target").unwrap_or_else(||"screen".into()), gs("window_title"), gf("scale"), gu("quality").map(|q|q as u8)).await),
-            "mouse_move"   => self.apply(pc::mouse_move(gi("x"), gi("y")).await),
-            "mouse_click"  => self.apply(pc::mouse_click(gi("x"), gi("y"), gs("action").unwrap_or_else(||"single".into())).await),
-            "mouse_scroll" => self.apply(pc::mouse_scroll(gi("x"), gi("y"), gi("delta_x"), gi("delta_y"), gs("unit").unwrap_or_else(||"lines".into())).await),
-            "mouse_drag"   => self.apply(pc::mouse_drag(gi("from_x"), gi("from_y"), gi("to_x"), gi("to_y")).await),
-            "key_press"    => self.apply(pc::key_press(garr("keys")).await),
-            "type_text"    => self.apply(pc::type_text(gs("text").unwrap_or_default()).await),
-            "clipboard_get"  => self.apply(pc::clipboard_get().await),
-            "clipboard_set"  => self.apply(pc::clipboard_set(gs("text").unwrap_or_default()).await),
-            "file_read"   => self.apply(pc::file_read(gs("path").unwrap_or_default(), gs("encoding")).await),
-            "file_write"  => self.apply(pc::file_write(gs("path").unwrap_or_default(), gs("content").unwrap_or_default(), gs("encoding")).await),
-            "file_list"   => self.apply(pc::file_list(gs("path").unwrap_or_default(), gb("recursive")).await),
-            "file_delete" => self.apply(pc::file_delete(gs("path").unwrap_or_default()).await),
-            "file_move"   => self.apply(pc::file_move(gs("from").unwrap_or_default(), gs("to").unwrap_or_default()).await),
-            "app_launch"  => self.apply(pc::app_launch(gs("command").unwrap_or_default(), a.get("args").and_then(|v|v.as_array()).map(|arr|arr.iter().filter_map(|v|v.as_str().map(String::from)).collect())).await),
-            "app_list"    => self.apply(pc::app_list().await),
-            "app_focus"   => self.apply(pc::app_focus(gu("pid").map(|p|p as u32), gs("title")).await),
-            "app_close"   => self.apply(pc::app_close(gu("pid").unwrap_or(0) as u32, gb("force")).await),
-            "shell"       => self.apply(pc::shell(gs("cmd").unwrap_or_default(), gu("timeout_ms")).await),
-            "browser_connect" => self.apply_web(web::browser_connect(sm, gu("port").map(|p|p as u16), gs("browser")).await),
-            "browser_open"    => self.apply_web(web::browser_open(sm, gs("browser"), gs("profile")).await),
-            "navigate"    => self.apply_web(web::navigate(sm, gs("url").unwrap_or_default(), gs("wait"), gs("session_id")).await),
-            "get_url"     => self.apply_web(web::get_url(sm, gs("session_id")).await),
-            "get_dom"     => self.apply_web(web::get_dom(sm, gs("selector"), gu("depth").map(|d|d as u8), gb("interactive_only"), gs("session_id")).await),
-            "click"       => self.apply_web(web::click(sm, gs("selector").unwrap_or_default(), gs("session_id")).await),
-            "hover"       => self.apply_web(web::hover(sm, gs("selector").unwrap_or_default(), gs("session_id")).await),
-            "type"        => self.apply_web(web::type_input(sm, gs("selector").unwrap_or_default(), gs("text").unwrap_or_default(), gb("clear"), gs("session_id")).await),
-            "select"      => self.apply_web(web::select(sm, gs("selector").unwrap_or_default(), gs("value").unwrap_or_default(), gs("session_id")).await),
-            "check"       => self.apply_web(web::check(sm, gs("selector").unwrap_or_default(), gb("checked").unwrap_or(false), gs("session_id")).await),
-            "scroll"      => self.apply_web(web::scroll_page(sm, gs("selector"), a.get("delta_x").and_then(|v|v.as_i64()).map(|v|v as i32), a.get("delta_y").and_then(|v|v.as_i64()).map(|v|v as i32), gs("unit").unwrap_or_else(||"lines".into()), gs("session_id")).await),
-            "wait_for"    => self.apply_web(web::wait_for(sm, gs("selector").unwrap_or_default(), gu("timeout_ms"), gs("state"), gs("session_id")).await),
-            "web_screenshot" => self.apply_web(web::web_screenshot(sm, gb("full_page"), gs("selector"), gf("scale"), gu("quality").map(|q|q as u8), gs("session_id")).await),
-            "evaluate"    => self.apply_web(web::evaluate(sm, gs("script").unwrap_or_default(), gs("session_id")).await),
-            "tab_list"    => self.apply_web(web::tab_list(sm, gs("session_id")).await),
-            "tab_new"     => self.apply_web(web::tab_new(sm, gs("url"), gs("session_id")).await),
-            "tab_switch"  => self.apply_web(web::tab_switch(sm, gs("id").unwrap_or_default(), gs("session_id")).await),
-            "tab_close"   => self.apply_web(web::tab_close(sm, gs("id").unwrap_or_default(), gs("session_id")).await),
-            "cookie_get"  => self.apply_web(web::cookie_get(sm, gs("url"), gs("name"), gs("session_id")).await),
+            "get_last_error"   => self.take_error(),
+            "screenshot"       => self.apply(pc::screenshot(gs("target").unwrap_or_else(||"screen".into()), gs("window_title"), gf("scale"), gu("quality").map(|q|q as u8)).await),
+            "mouse_move"       => self.apply(pc::mouse_move(gi("x"), gi("y")).await),
+            "mouse_click"      => self.apply(pc::mouse_click(gi("x"), gi("y"), gs("action").unwrap_or_else(||"single".into())).await),
+            "mouse_scroll"     => self.apply(pc::mouse_scroll(gi("x"), gi("y"), gi("delta_x"), gi("delta_y"), gs("unit").unwrap_or_else(||"lines".into())).await),
+            "mouse_drag"       => self.apply(pc::mouse_drag(gi("from_x"), gi("from_y"), gi("to_x"), gi("to_y")).await),
+            "key_press"        => self.apply(pc::key_press(garr("keys")).await),
+            "type_text"        => self.apply(pc::type_text(gs("text").unwrap_or_default()).await),
+            "clipboard_get"    => self.apply(pc::clipboard_get().await),
+            "clipboard_set"    => self.apply(pc::clipboard_set(gs("text").unwrap_or_default()).await),
+            "file_read"        => self.apply(pc::file_read(gs("path").unwrap_or_default(), gs("encoding")).await),
+            "file_write"       => self.apply(pc::file_write(gs("path").unwrap_or_default(), gs("content").unwrap_or_default(), gs("encoding")).await),
+            "file_list"        => self.apply(pc::file_list(gs("path").unwrap_or_default(), gb("recursive")).await),
+            "file_delete"      => self.apply(pc::file_delete(gs("path").unwrap_or_default()).await),
+            "file_move"        => self.apply(pc::file_move(gs("from").unwrap_or_default(), gs("to").unwrap_or_default()).await),
+            "app_launch"       => self.apply(pc::app_launch(gs("command").unwrap_or_default(), a.get("args").and_then(|v|v.as_array()).map(|arr|arr.iter().filter_map(|v|v.as_str().map(String::from)).collect())).await),
+            "app_list"         => self.apply(pc::app_list().await),
+            "app_focus"        => self.apply(pc::app_focus(gu("pid").map(|p|p as u32), gs("title")).await),
+            "app_close"        => self.apply(pc::app_close(gu("pid").unwrap_or(0) as u32, gb("force")).await),
+            "shell"            => self.apply(pc::shell(gs("cmd").unwrap_or_default(), gu("timeout_ms")).await),
+            "browser_connect"  => self.apply_web(web::browser_connect(sm, gu("port").map(|p|p as u16), gs("browser")).await),
+            "browser_open"     => self.apply_web(web::browser_open(sm, gs("browser"), gs("profile")).await),
+            "browser_close"    => self.apply_web(web::browser_close(sm, gs("session_id")).await),
+            "navigate"         => self.apply_web(web::navigate(sm, gs("url").unwrap_or_default(), gs("wait"), gs("session_id")).await),
+            "get_url"          => self.apply_web(web::get_url(sm, gs("session_id")).await),
+            "get_dom"          => self.apply_web(web::get_dom(sm, gs("selector"), gu("depth").map(|d|d as u8), gb("interactive_only"), gs("session_id")).await),
+            "click"            => self.apply_web(web::click(sm, gs("selector").unwrap_or_default(), gs("session_id")).await),
+            "hover"            => self.apply_web(web::hover(sm, gs("selector").unwrap_or_default(), gs("session_id")).await),
+            "type"             => self.apply_web(web::type_input(sm, gs("selector").unwrap_or_default(), gs("text").unwrap_or_default(), gb("clear"), gs("session_id")).await),
+            "select"           => self.apply_web(web::select(sm, gs("selector").unwrap_or_default(), gs("value").unwrap_or_default(), gs("session_id")).await),
+            "check"            => self.apply_web(web::check(sm, gs("selector").unwrap_or_default(), gb("checked").unwrap_or(false), gs("session_id")).await),
+            "scroll"           => self.apply_web(web::scroll_page(sm, gs("selector"), a.get("delta_x").and_then(|v|v.as_i64()).map(|v|v as i32), a.get("delta_y").and_then(|v|v.as_i64()).map(|v|v as i32), gs("unit").unwrap_or_else(||"lines".into()), gs("session_id")).await),
+            "wait_for"         => self.apply_web(web::wait_for(sm, gs("selector").unwrap_or_default(), gu("timeout_ms"), gs("state"), gs("session_id")).await),
+            "web_screenshot"   => self.apply_web(web::web_screenshot(sm, gb("full_page"), gs("selector"), gf("scale"), gu("quality").map(|q|q as u8), gs("session_id")).await),
+            "evaluate"         => self.apply_web(web::evaluate(sm, gs("script").unwrap_or_default(), gs("session_id")).await),
+            "tab_list"         => self.apply_web(web::tab_list(sm, gs("session_id")).await),
+            "tab_new"          => self.apply_web(web::tab_new(sm, gs("url"), gs("session_id")).await),
+            "tab_switch"       => self.apply_web(web::tab_switch(sm, gs("id").unwrap_or_default(), gs("session_id")).await),
+            "tab_close"        => self.apply_web(web::tab_close(sm, gs("id").unwrap_or_default(), gs("session_id")).await),
+            "cookie_get"       => self.apply_web(web::cookie_get(sm, gs("url"), gs("name"), gs("session_id")).await),
             _ => { self.set_error(format!("unknown tool: {name}")); "E404".to_string() }
         }
     }
@@ -105,40 +107,41 @@ impl D3skServer {
 
 // ── parameter structs ─────────────────────────────────────────────────────────
 
-#[derive(Deserialize, JsonSchema)] struct BatchParams { steps_json: String, on_error: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct ScreenshotParams { target: String, window_title: Option<String>, scale: Option<f32>, quality: Option<u8> }
-#[derive(Deserialize, JsonSchema)] struct MouseMoveParams { x: i32, y: i32 }
-#[derive(Deserialize, JsonSchema)] struct MouseClickParams { x: i32, y: i32, action: String }
-#[derive(Deserialize, JsonSchema)] struct MouseScrollParams { x: i32, y: i32, delta_x: i32, delta_y: i32, unit: String }
-#[derive(Deserialize, JsonSchema)] struct MouseDragParams { from_x: i32, from_y: i32, to_x: i32, to_y: i32 }
-#[derive(Deserialize, JsonSchema)] struct KeyPressParams { keys: Vec<String> }
-#[derive(Deserialize, JsonSchema)] struct TypeTextParams { text: String }
+#[derive(Deserialize, JsonSchema)] struct BatchParams        { steps_json: String, on_error: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct ScreenshotParams   { target: String, window_title: Option<String>, scale: Option<f32>, quality: Option<u8> }
+#[derive(Deserialize, JsonSchema)] struct MouseMoveParams    { x: i32, y: i32 }
+#[derive(Deserialize, JsonSchema)] struct MouseClickParams   { x: i32, y: i32, action: String }
+#[derive(Deserialize, JsonSchema)] struct MouseScrollParams  { x: i32, y: i32, delta_x: i32, delta_y: i32, unit: String }
+#[derive(Deserialize, JsonSchema)] struct MouseDragParams    { from_x: i32, from_y: i32, to_x: i32, to_y: i32 }
+#[derive(Deserialize, JsonSchema)] struct KeyPressParams     { keys: Vec<String> }
+#[derive(Deserialize, JsonSchema)] struct TypeTextParams     { text: String }
 #[derive(Deserialize, JsonSchema)] struct ClipboardSetParams { text: String }
-#[derive(Deserialize, JsonSchema)] struct FileReadParams { path: String, encoding: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct FileWriteParams { path: String, content: String, encoding: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct FileListParams { path: String, recursive: Option<bool> }
-#[derive(Deserialize, JsonSchema)] struct FileDeleteParams { path: String }
-#[derive(Deserialize, JsonSchema)] struct FileMoveParams { from: String, to: String }
-#[derive(Deserialize, JsonSchema)] struct AppLaunchParams { command: String, args: Option<Vec<String>> }
-#[derive(Deserialize, JsonSchema)] struct AppFocusParams { pid: Option<u32>, title: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct AppCloseParams { pid: u32, force: Option<bool> }
-#[derive(Deserialize, JsonSchema)] struct ShellParams { cmd: String, timeout_ms: Option<u64> }
+#[derive(Deserialize, JsonSchema)] struct FileReadParams     { path: String, encoding: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct FileWriteParams    { path: String, content: String, encoding: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct FileListParams     { path: String, recursive: Option<bool> }
+#[derive(Deserialize, JsonSchema)] struct FileDeleteParams   { path: String }
+#[derive(Deserialize, JsonSchema)] struct FileMoveParams     { from: String, to: String }
+#[derive(Deserialize, JsonSchema)] struct AppLaunchParams    { command: String, args: Option<Vec<String>> }
+#[derive(Deserialize, JsonSchema)] struct AppFocusParams     { pid: Option<u32>, title: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct AppCloseParams     { pid: u32, force: Option<bool> }
+#[derive(Deserialize, JsonSchema)] struct ShellParams        { cmd: String, timeout_ms: Option<u64> }
 #[derive(Deserialize, JsonSchema)] struct BrowserConnectParams { port: Option<u16>, browser: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct BrowserOpenParams { browser: Option<String>, profile: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct NavigateParams { url: String, wait: Option<String>, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct SessionParam { session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct GetDomParams { selector: Option<String>, depth: Option<u8>, interactive_only: Option<bool>, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct SelectorParams { selector: String, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct TypeInputParams { selector: String, text: String, clear: Option<bool>, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct SelectParams { selector: String, value: String, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct CheckParams { selector: String, checked: bool, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct WebScrollParams { selector: Option<String>, delta_x: Option<i32>, delta_y: Option<i32>, unit: String, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct WaitForParams { selector: String, timeout_ms: Option<u64>, state: Option<String>, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct BrowserOpenParams  { browser: Option<String>, profile: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct BrowserCloseParams { session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct NavigateParams     { url: String, wait: Option<String>, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct SessionParam       { session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct GetDomParams       { selector: Option<String>, depth: Option<u8>, interactive_only: Option<bool>, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct SelectorParams     { selector: String, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct TypeInputParams    { selector: String, text: String, clear: Option<bool>, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct SelectParams       { selector: String, value: String, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct CheckParams        { selector: String, checked: bool, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct WebScrollParams    { selector: Option<String>, delta_x: Option<i32>, delta_y: Option<i32>, unit: String, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct WaitForParams      { selector: String, timeout_ms: Option<u64>, state: Option<String>, session_id: Option<String> }
 #[derive(Deserialize, JsonSchema)] struct WebScreenshotParams { full_page: Option<bool>, selector: Option<String>, scale: Option<f32>, quality: Option<u8>, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct EvaluateParams { script: String, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct TabIdParams { id: String, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct TabNewParams { url: Option<String>, session_id: Option<String> }
-#[derive(Deserialize, JsonSchema)] struct CookieGetParams { url: Option<String>, name: Option<String>, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct EvaluateParams     { script: String, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct TabIdParams        { id: String, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct TabNewParams       { url: Option<String>, session_id: Option<String> }
+#[derive(Deserialize, JsonSchema)] struct CookieGetParams    { url: Option<String>, name: Option<String>, session_id: Option<String> }
 
 // ── tool definitions ──────────────────────────────────────────────────────────
 
@@ -147,7 +150,7 @@ impl D3skServer {
     #[tool(description = "Get detail message of the last error")]
     async fn get_last_error(&self) -> String { self.take_error() }
 
-    #[tool(description = "Execute multiple tools in sequence. steps_json: JSON array string of [{tool,...args}]. on_error: 'stop'|'continue'")]
+    #[tool(description = "Execute multiple tools in sequence. steps_json: JSON array of [{tool,...args}]. on_error: 'stop'|'continue'")]
     async fn batch(&self, Parameters(p): Parameters<BatchParams>) -> String {
         let steps: Vec<serde_json::Value> = match serde_json::from_str(&p.steps_json) {
             Ok(v) => v,
@@ -158,7 +161,7 @@ impl D3skServer {
         for step in &steps {
             let name = step.get("tool").and_then(|v| v.as_str()).unwrap_or("");
             let result = self.dispatch_tool(name, step).await;
-            let failed = result.starts_with('E');
+            let failed = is_error(&result);
             results.push(result);
             if on_error == "stop" && failed { break; }
         }
@@ -250,7 +253,7 @@ impl D3skServer {
         self.apply(pc::app_launch(p.command, p.args).await)
     }
 
-    #[tool(description = "List running windowed apps. Returns '<pid>,<name>,<title>' lines")]
+    #[tool(description = "List running windowed apps. Returns JSON [{pid,name,title}]")]
     async fn app_list(&self) -> String { self.apply(pc::app_list().await) }
 
     #[tool(description = "Bring window to front. Provide pid or title")]
@@ -282,6 +285,11 @@ impl D3skServer {
         self.apply_web(web::browser_open(&self.web_sessions, p.browser, p.profile).await)
     }
 
+    #[tool(description = "Close browser session. For browser_open sessions, terminates the browser process")]
+    async fn browser_close(&self, Parameters(p): Parameters<BrowserCloseParams>) -> String {
+        self.apply_web(web::browser_close(&self.web_sessions, p.session_id).await)
+    }
+
     // ── web: navigation ───────────────────────────────────────────────────────
 
     #[tool(description = "Navigate to URL. wait: 'load'|'domcontentloaded'|'networkidle'")]
@@ -289,14 +297,14 @@ impl D3skServer {
         self.apply_web(web::navigate(&self.web_sessions, p.url, p.wait, p.session_id).await)
     }
 
-    #[tool(description = "Get current URL and title. Returns '<url>,<title>'")]
+    #[tool(description = "Get current URL and title. Returns JSON {url,title}")]
     async fn get_url(&self, Parameters(p): Parameters<SessionParam>) -> String {
         self.apply_web(web::get_url(&self.web_sessions, p.session_id).await)
     }
 
     // ── web: DOM ──────────────────────────────────────────────────────────────
 
-    #[tool(description = "Get DOM. interactive_only: returns 'tag,selector,text' lines for interactive elements")]
+    #[tool(description = "Get DOM. depth: max nesting depth to serialize. interactive_only: returns 'tag,selector,text' lines for interactive elements")]
     async fn get_dom(&self, Parameters(p): Parameters<GetDomParams>) -> String {
         self.apply_web(web::get_dom(&self.web_sessions, p.selector, p.depth, p.interactive_only, p.session_id).await)
     }
@@ -342,7 +350,7 @@ impl D3skServer {
 
     // ── web: screenshot ───────────────────────────────────────────────────────
 
-    #[tool(description = "Browser screenshot. Returns '<base64>,<w>,<h>'")]
+    #[tool(description = "Browser screenshot. scale: 0.1-2.0. Returns '<base64>,<w>,<h>'")]
     async fn web_screenshot(&self, Parameters(p): Parameters<WebScreenshotParams>) -> String {
         self.apply_web(web::web_screenshot(&self.web_sessions, p.full_page, p.selector, p.scale, p.quality, p.session_id).await)
     }
@@ -356,7 +364,7 @@ impl D3skServer {
 
     // ── web: tabs ─────────────────────────────────────────────────────────────
 
-    #[tool(description = "List open tabs. Returns '<id>,<url>,<title>' lines")]
+    #[tool(description = "List open tabs. Returns JSON [{id,url,title}]")]
     async fn tab_list(&self, Parameters(p): Parameters<SessionParam>) -> String {
         self.apply_web(web::tab_list(&self.web_sessions, p.session_id).await)
     }
@@ -378,7 +386,7 @@ impl D3skServer {
 
     // ── web: cookie ───────────────────────────────────────────────────────────
 
-    #[tool(description = "Get cookies. Returns '<name>,<value>,<domain>' lines")]
+    #[tool(description = "Get cookies. Returns JSON [{name,value,domain}]")]
     async fn cookie_get(&self, Parameters(p): Parameters<CookieGetParams>) -> String {
         self.apply_web(web::cookie_get(&self.web_sessions, p.url, p.name, p.session_id).await)
     }

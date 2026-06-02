@@ -4,14 +4,7 @@ use std::time::Duration;
 use chromiumoxide::{Browser, BrowserConfig, Page};
 use futures::StreamExt;
 use tokio::sync::Mutex;
-
-pub type Res = (String, Option<String>);
-
-fn ok() -> Res { ("ok".to_string(), None) }
-fn e500(msg: impl ToString) -> Res { ("E500".to_string(), Some(msg.to_string())) }
-fn e400(msg: impl ToString) -> Res { ("E400".to_string(), Some(msg.to_string())) }
-fn e404(msg: impl ToString) -> Res { ("E404".to_string(), Some(msg.to_string())) }
-fn e408(msg: impl ToString) -> Res { ("E408".to_string(), Some(msg.to_string())) }
+use super::common::{Res, ok, e400, e404, e408, e500};
 
 // ── session manager ───────────────────────────────────────────────────────────
 
@@ -53,7 +46,6 @@ fn spawn_handler(mut handler: chromiumoxide::Handler) {
     tokio::spawn(async move { while handler.next().await.is_some() {} });
 }
 
-// Helper: clone active page (releasing lock) then run body
 macro_rules! with_page {
     ($sm:expr, $sid:expr, |$page:ident| $body:expr) => {{
         let arc = match $sm.get($sid.as_deref()).await {
@@ -130,6 +122,17 @@ pub async fn browser_open(sm: &SessionManager, browser: Option<String>, profile:
     }
 }
 
+// ── browser_close ─────────────────────────────────────────────────────────────
+
+pub async fn browser_close(sm: &SessionManager, session_id: Option<String>) -> Res {
+    let id = session_id.as_deref().unwrap_or("default");
+    if sm.get(Some(id)).await.is_none() {
+        return e404(format!("session not found: {id}"));
+    }
+    sm.remove(id).await;
+    ok()
+}
+
 // ── navigate ──────────────────────────────────────────────────────────────────
 
 pub async fn navigate(sm: &SessionManager, url: String, wait: Option<String>, session_id: Option<String>) -> Res {
@@ -152,13 +155,13 @@ pub async fn navigate(sm: &SessionManager, url: String, wait: Option<String>, se
         return e500(e);
     }
 
-    let wait_res = match wait.as_deref().unwrap_or("load") {
-        "networkidle" => page.wait_for_navigation().await,
-        _ => Ok(&page),
-    };
-    if let Err(e) = wait_res {
-        sess.active_page = Some(page);
-        return e500(e);
+    // goto already waits for the "load" event (which implies DOMContentLoaded).
+    // "networkidle" additionally waits for all pending navigation to settle.
+    if wait.as_deref() == Some("networkidle") {
+        if let Err(e) = page.wait_for_navigation().await {
+            sess.active_page = Some(page);
+            return e500(e);
+        }
     }
 
     sess.active_page = Some(page);
@@ -177,28 +180,48 @@ pub async fn get_url(sm: &SessionManager, session_id: Option<String>) -> Res {
             Ok(v) => v.into_value::<String>().unwrap_or_default(),
             Err(e) => return e500(e),
         };
-        (format!("{},{}", url, title), None)
+        (serde_json::json!({"url": url, "title": title}).to_string(), None)
     })
 }
 
 // ── get_dom ───────────────────────────────────────────────────────────────────
 
-pub async fn get_dom(sm: &SessionManager, selector: Option<String>, _depth: Option<u8>, interactive_only: Option<bool>, session_id: Option<String>) -> Res {
+pub async fn get_dom(sm: &SessionManager, selector: Option<String>, depth: Option<u8>, interactive_only: Option<bool>, session_id: Option<String>) -> Res {
     with_page!(sm, session_id, |page| {
         if interactive_only.unwrap_or(false) {
             let js = r#"Array.from(document.querySelectorAll('button,input,select,a,textarea')).map(el=>{const tag=el.tagName.toLowerCase();let sel=tag;if(el.id)sel='#'+el.id;else if(el.getAttribute('name'))sel=tag+'[name="'+el.getAttribute('name')+'"]';else if(el.className)sel=tag+'.'+el.className.toString().trim().split(/\s+/).join('.');const text=(el.textContent||el.value||el.placeholder||'').trim().replace(/\s+/g,' ').slice(0,100);return tag+','+sel+','+text;}).join('\n')"#;
-            match page.evaluate(js).await {
-                Ok(v) => return (v.into_value::<String>().unwrap_or_default(), None),
-                Err(e) => return e500(e),
-            }
+            return match page.evaluate(js).await {
+                Ok(v) => (v.into_value::<String>().unwrap_or_default(), None),
+                Err(e) => e500(e),
+            };
+        }
+
+        if let Some(d) = depth {
+            let root_expr = match &selector {
+                Some(s) => format!("document.querySelector({})", serde_json::to_string(s).unwrap_or_default()),
+                None    => "document.documentElement".to_string(),
+            };
+            let js = format!(
+                r#"(function(){{var root={root};if(!root)return 'E404';var mx={d};function s(n,d){{if(n.nodeType===3){{return n.textContent.trim();}}if(n.nodeType!==1)return '';var tag=n.tagName.toLowerCase();var at=Array.from(n.attributes).map(function(a){{return ' '+a.name+'="'+a.value.replace(/"/g,'&quot;')+'"';}}).join('');if(d>=mx)return '<'+tag+at+'>...</'+tag+'>';return '<'+tag+at+'>'+Array.from(n.childNodes).map(function(c){{return s(c,d+1);}}).join('')+'</'+tag+'>';}}return s(root,0);}})()"#,
+                root = root_expr,
+                d = d
+            );
+            return match page.evaluate(js).await {
+                Ok(v) => {
+                    let s = v.into_value::<String>().unwrap_or_default();
+                    if s == "E404" { e404(format!("element not found: {}", selector.unwrap_or_default())) }
+                    else { (s, None) }
+                }
+                Err(e) => e500(e),
+            };
         }
 
         if let Some(sel) = selector {
             let js = format!("document.querySelector({:?})?.outerHTML??''", sel);
-            match page.evaluate(js).await {
-                Ok(v) => return (v.into_value::<String>().unwrap_or_default(), None),
-                Err(e) => return e500(e),
-            }
+            return match page.evaluate(js).await {
+                Ok(v) => (v.into_value::<String>().unwrap_or_default(), None),
+                Err(e) => e500(e),
+            };
         }
 
         match page.content().await {
@@ -341,10 +364,12 @@ pub async fn wait_for(sm: &SessionManager, selector: String, timeout_ms: Option<
 
 // ── web_screenshot ────────────────────────────────────────────────────────────
 
-pub async fn web_screenshot(sm: &SessionManager, full_page: Option<bool>, _selector: Option<String>, _scale: Option<f32>, quality: Option<u8>, session_id: Option<String>) -> Res {
+pub async fn web_screenshot(sm: &SessionManager, full_page: Option<bool>, _selector: Option<String>, scale: Option<f32>, quality: Option<u8>, session_id: Option<String>) -> Res {
     use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as B64;
+    use std::io::Cursor;
+    use image::codecs::jpeg::JpegEncoder;
 
     with_page!(sm, session_id, |page| {
         let q = quality.unwrap_or(80) as i64;
@@ -354,20 +379,32 @@ pub async fn web_screenshot(sm: &SessionManager, full_page: Option<bool>, _selec
             .full_page(full_page.unwrap_or(false))
             .build();
 
-        match page.screenshot(params).await {
-            Ok(bytes) => {
-                match image::load_from_memory(&bytes) {
-                    Ok(img) => {
-                        let (w, h) = (img.width(), img.height());
-                        (format!("{},{},{}", B64.encode(&bytes), w, h), None)
-                    }
-                    Err(_) => {
-                        (format!("{},0,0", B64.encode(&bytes)), None)
-                    }
-                }
+        let bytes = match page.screenshot(params).await {
+            Ok(b) => b,
+            Err(e) => return e500(e),
+        };
+
+        let img = match image::load_from_memory(&bytes) {
+            Ok(i) => i,
+            Err(_) => return (format!("{},0,0", B64.encode(&bytes)), None),
+        };
+
+        let (final_bytes, fw, fh) = if let Some(s) = scale.map(|v| v.clamp(0.1, 2.0)) {
+            let nw = ((img.width()  as f32) * s) as u32;
+            let nh = ((img.height() as f32) * s) as u32;
+            let resized = img.resize(nw, nh, image::imageops::FilterType::Lanczos3);
+            let (fw, fh) = (resized.width(), resized.height());
+            let mut buf = Cursor::new(Vec::<u8>::new());
+            let encoder = JpegEncoder::new_with_quality(&mut buf, quality.unwrap_or(80));
+            if let Err(e) = resized.into_rgb8().write_with_encoder(encoder) {
+                return e500(e);
             }
-            Err(e) => e500(e),
-        }
+            (buf.into_inner(), fw, fh)
+        } else {
+            (bytes, img.width(), img.height())
+        };
+
+        (format!("{},{},{}", B64.encode(&final_bytes), fw, fh), None)
     })
 }
 
@@ -404,16 +441,19 @@ pub async fn tab_list(sm: &SessionManager, session_id: Option<String>) -> Res {
         Err(e) => return e500(e),
     };
 
-    let mut lines = Vec::new();
+    let mut entries = Vec::new();
     for page in &pages {
-        let id = page.target_id().inner().to_string();
-        let url = page.evaluate("location.href").await
+        let id    = page.target_id().inner().to_string();
+        let url   = page.evaluate("location.href").await
             .ok().and_then(|v| v.into_value::<String>().ok()).unwrap_or_default();
         let title = page.evaluate("document.title").await
             .ok().and_then(|v| v.into_value::<String>().ok()).unwrap_or_default();
-        lines.push(format!("{id},{url},{title}"));
+        entries.push(serde_json::json!({"id": id, "url": url, "title": title}));
     }
-    (lines.join("\n"), None)
+    match serde_json::to_string(&entries) {
+        Ok(s) => (s, None),
+        Err(e) => e500(e),
+    }
 }
 
 // ── tab_new ───────────────────────────────────────────────────────────────────
@@ -488,14 +528,17 @@ pub async fn cookie_get(sm: &SessionManager, url: Option<String>, name: Option<S
             Ok(c) => c,
             Err(e) => return e500(e),
         };
-        let filtered: Vec<String> = cookies.iter()
+        let entries: Vec<serde_json::Value> = cookies.iter()
             .filter(|c| {
-                let url_ok = url.as_ref().map(|u| u.contains(c.domain.as_str())).unwrap_or(true);
+                let url_ok  = url.as_ref().map(|u| u.contains(c.domain.as_str())).unwrap_or(true);
                 let name_ok = name.as_ref().map(|n| c.name == *n).unwrap_or(true);
                 url_ok && name_ok
             })
-            .map(|c| format!("{},{},{}", c.name, c.value, c.domain))
+            .map(|c| serde_json::json!({"name": c.name, "value": c.value, "domain": c.domain}))
             .collect();
-        (filtered.join("\n"), None)
+        match serde_json::to_string(&entries) {
+            Ok(s) => (s, None),
+            Err(e) => e500(e),
+        }
     })
 }

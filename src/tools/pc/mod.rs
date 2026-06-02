@@ -9,13 +9,7 @@ use xcap::{Monitor, Window};
 use image::{DynamicImage, codecs::jpeg::JpegEncoder};
 use arboard::Clipboard;
 use serde::Serialize;
-
-pub type Res = (String, Option<String>);
-
-fn ok() -> Res { ("ok".to_string(), None) }
-fn e500(msg: impl ToString) -> Res { ("E500".to_string(), Some(msg.to_string())) }
-fn e400(msg: impl ToString) -> Res { ("E400".to_string(), Some(msg.to_string())) }
-fn e404(msg: impl ToString) -> Res { ("E404".to_string(), Some(msg.to_string())) }
+use super::common::{Res, ok, e400, e404, e500};
 
 fn new_enigo() -> Result<Enigo, String> {
     Enigo::new(&Settings::default()).map_err(|e| e.to_string())
@@ -82,18 +76,19 @@ pub async fn mouse_move(x: i32, y: i32) -> Res {
 pub async fn mouse_click(x: i32, y: i32, action: String) -> Res {
     let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
     if let Err(e) = eg.move_mouse(x, y, Coordinate::Abs) { return e500(e); }
-    let res = match action.as_str() {
-        "single" => eg.button(Button::Left, Direction::Click),
+    match action.as_str() {
+        "single" => match eg.button(Button::Left, Direction::Click) {
+            Ok(_) => ok(), Err(e) => e500(e)
+        },
         "double" => {
-            let _ = eg.button(Button::Left, Direction::Click);
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            eg.button(Button::Left, Direction::Click)
+            if let Err(e) = eg.button(Button::Left, Direction::Click) { return e500(e); }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            match eg.button(Button::Left, Direction::Click) { Ok(_) => ok(), Err(e) => e500(e) }
         }
-        "right"  => eg.button(Button::Right, Direction::Click),
-        "middle" => eg.button(Button::Middle, Direction::Click),
-        _ => return e400("action must be single/double/right/middle"),
-    };
-    match res { Ok(_) => ok(), Err(e) => e500(e) }
+        "right"  => match eg.button(Button::Right,  Direction::Click) { Ok(_) => ok(), Err(e) => e500(e) },
+        "middle" => match eg.button(Button::Middle, Direction::Click) { Ok(_) => ok(), Err(e) => e500(e) },
+        _ => e400("action must be single/double/right/middle"),
+    }
 }
 
 pub async fn mouse_scroll(x: i32, y: i32, delta_x: i32, delta_y: i32, unit: String) -> Res {
@@ -109,12 +104,12 @@ pub async fn mouse_drag(from_x: i32, from_y: i32, to_x: i32, to_y: i32) -> Res {
     let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
     if let Err(e) = eg.move_mouse(from_x, from_y, Coordinate::Abs) { return e500(e); }
     if let Err(e) = eg.button(Button::Left, Direction::Press) { return e500(e); }
-    std::thread::sleep(std::time::Duration::from_millis(30));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     if let Err(e) = eg.move_mouse(to_x, to_y, Coordinate::Abs) {
         let _ = eg.button(Button::Left, Direction::Release);
         return e500(e);
     }
-    std::thread::sleep(std::time::Duration::from_millis(30));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     match eg.button(Button::Left, Direction::Release) { Ok(_) => ok(), Err(e) => e500(e) }
 }
 
@@ -157,7 +152,7 @@ pub async fn key_press(keys: Vec<String>) -> Res {
     if parsed.len() != keys.len() {
         return e400(format!("unknown key in: {:?}", keys));
     }
-    for &k in &parsed       { if let Err(e) = eg.key(k, Direction::Press)   { return e500(e); } }
+    for &k in &parsed            { if let Err(e) = eg.key(k, Direction::Press)   { return e500(e); } }
     for &k in parsed.iter().rev() { if let Err(e) = eg.key(k, Direction::Release) { return e500(e); } }
     ok()
 }
@@ -272,7 +267,7 @@ pub async fn app_list() -> Res {
     let result = {
         let out = Command::new("powershell")
             .args(["-NoProfile", "-Command",
-                r#"Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | ForEach-Object { "$($_.Id),$($_.ProcessName),$($_.MainWindowTitle)" }"#])
+                r#"ConvertTo-Json -InputObject @(Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object @{N='pid';E={$_.Id}},@{N='name';E={$_.ProcessName}},@{N='title';E={$_.MainWindowTitle}}) -Compress"#])
             .output();
         match out {
             Ok(o) => (String::from_utf8_lossy(&o.stdout).trim().to_string(), None),
@@ -283,7 +278,21 @@ pub async fn app_list() -> Res {
     let result = {
         let out = Command::new("ps").args(["-eo", "pid=,comm="]).output();
         match out {
-            Ok(o) => (String::from_utf8_lossy(&o.stdout).trim().to_string(), None),
+            Ok(o) => {
+                let entries: Vec<serde_json::Value> = String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let mut it = line.trim().splitn(2, ' ');
+                        let pid: u32 = it.next()?.trim().parse().ok()?;
+                        let name = it.next().unwrap_or("").trim().to_string();
+                        Some(serde_json::json!({"pid": pid, "name": name, "title": ""}))
+                    })
+                    .collect();
+                match serde_json::to_string(&entries) {
+                    Ok(s) => (s, None),
+                    Err(e) => e500(e),
+                }
+            }
             Err(e) => e500(e),
         }
     };

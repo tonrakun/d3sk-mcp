@@ -110,7 +110,7 @@ browser_open { "browser": "chrome" }
 | `file_delete` | `path` | `ok` |
 | `file_move` | `from`, `to` | `ok` |
 | `app_launch` | `command`, `args` | PID |
-| `app_list` | — | `<pid>,<name>,<title>` lines |
+| `app_list` | — | JSON `[{pid, name, title}]` |
 | `app_focus` | `pid` or `title` | `ok` |
 | `app_close` | `pid`, `force` | `ok` |
 | `shell` | `cmd`, `timeout_ms` | JSON `{stdout, stderr, exit_code}` |
@@ -123,9 +123,10 @@ All web tools accept an optional `session_id` (defaults to the first/only sessio
 |------|-----------|---------|
 | `browser_connect` | `port` (default 9222) | `session_id` |
 | `browser_open` | `browser`: `"chrome"`\|`"brave"`\|`"edge"`, `profile` | `session_id` |
-| `navigate` | `url`, `wait`: `"load"`\|`"networkidle"` | `ok` |
-| `get_url` | — | `<url>,<title>` |
-| `get_dom` | `selector`, `interactive_only` | HTML or `tag,selector,text` lines |
+| `browser_close` | `session_id` | `ok` |
+| `navigate` | `url`, `wait`: `"load"`\|`"domcontentloaded"`\|`"networkidle"` | `ok` |
+| `get_url` | — | JSON `{url, title}` |
+| `get_dom` | `selector`, `depth`, `interactive_only` | HTML or depth-limited HTML or `tag,selector,text` lines |
 | `click` | `selector` | `ok` |
 | `hover` | `selector` | `ok` |
 | `type_input` | `selector`, `text`, `clear` | `ok` |
@@ -135,11 +136,11 @@ All web tools accept an optional `session_id` (defaults to the first/only sessio
 | `wait_for` | `selector`, `state`: `"visible"`\|`"hidden"`, `timeout_ms` | `ok` |
 | `web_screenshot` | `full_page`, `quality` | `<base64>,<w>,<h>` |
 | `evaluate` | `script` | JS result as string |
-| `tab_list` | — | `<id>,<url>,<title>` lines |
+| `tab_list` | — | JSON `[{id, url, title}]` |
 | `tab_new` | `url` | tab id |
 | `tab_switch` | `id` | `ok` |
 | `tab_close` | `id` | `ok` |
-| `cookie_get` | `url`, `name` | `<name>,<value>,<domain>` lines |
+| `cookie_get` | `url`, `name` | JSON `[{name, value, domain}]` |
 
 ## Error codes
 

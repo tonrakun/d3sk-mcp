@@ -1,4 +1,3 @@
-mod error;
 mod tools;
 
 use rmcp::{ServiceExt, transport::stdio};

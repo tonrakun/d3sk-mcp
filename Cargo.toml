@@ -19,6 +19,3 @@ anyhow = "1"
 thiserror = "2"
 futures = "0.3"
 tokio-stream = "0.1"
-
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "processthreadsapi"] }
