@@ -1,0 +1,13 @@
+# Build artifacts
+/target/
+
+# AI / MCP tools (untracked)
+CLAUDE.md
+.mcp.json
+.t0k3n/
+.claude/
+*.claude
+
+# Environment
+.env
+.env.local

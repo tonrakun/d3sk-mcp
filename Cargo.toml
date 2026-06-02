@@ -1,0 +1,19 @@
+[package]
+name = "d3sk-mcp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rmcp = { version = "1", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+enigo = "0.3"
+xcap = "0.2"
+chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
+base64 = "0.22"
+arboard = "3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+anyhow = "1"
+thiserror = "2"
