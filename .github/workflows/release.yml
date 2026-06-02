@@ -106,4 +106,3 @@ jobs:
           files: artifacts/*
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
