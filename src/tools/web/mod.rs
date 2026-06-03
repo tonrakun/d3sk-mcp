@@ -105,6 +105,9 @@ pub async fn browser_open(sm: &SessionManager, browser: Option<String>, profile:
         cfg = cfg.chrome_executable(exe);
     }
 
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = browser;
+
     if let Some(ref p) = profile {
         cfg = cfg.args([format!("--user-data-dir={}", p)]);
     }
