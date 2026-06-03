@@ -7,6 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -63,6 +64,7 @@ jobs:
             libxcursor-dev libxi-dev libxss-dev libxtst-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libdbus-1-dev libwayland-dev libpipewire-0.3-dev \
+            libegl-dev \
             pkg-config
 
       - name: Build
