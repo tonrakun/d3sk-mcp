@@ -135,7 +135,37 @@ pub async fn browser_close(sm: &SessionManager, session_id: Option<String>) -> R
 
 // ── navigate ──────────────────────────────────────────────────────────────────
 
-pub async fn navigate(sm: &SessionManager, url: String, wait: Option<String>, session_id: Option<String>) -> Res {
+pub async fn navigate(sm: &SessionManager, url: Option<String>, action: Option<String>, wait: Option<String>, session_id: Option<String>) -> Res {
+    if let Some(act) = action {
+        let arc = match sm.get(session_id.as_deref()).await {
+            Some(a) => a,
+            None => return e404("session not found"),
+        };
+        let page = {
+            let guard = arc.lock().await;
+            match guard.active_page.as_ref() {
+                Some(p) => p.clone(),
+                None => return e404("no active page; call navigate or tab_new first"),
+            }
+        };
+        let js = match act.as_str() {
+            "back"    => "history.back()",
+            "forward" => "history.forward()",
+            "reload"  => "location.reload()",
+            _ => return e400("action must be 'back', 'forward', or 'reload'"),
+        };
+        if let Err(e) = page.evaluate(js).await { return e500(e); }
+        if wait.as_deref() == Some("networkidle") {
+            if let Err(e) = page.wait_for_navigation().await { return e500(e); }
+        }
+        return ok();
+    }
+
+    let url = match url {
+        Some(u) => u,
+        None => return e400("url or action required"),
+    };
+
     let arc = match sm.get(session_id.as_deref()).await {
         Some(a) => a,
         None => return e404("session not found"),
@@ -155,8 +185,6 @@ pub async fn navigate(sm: &SessionManager, url: String, wait: Option<String>, se
         return e500(e);
     }
 
-    // goto already waits for the "load" event (which implies DOMContentLoaded).
-    // "networkidle" additionally waits for all pending navigation to settle.
     if wait.as_deref() == Some("networkidle") {
         if let Err(e) = page.wait_for_navigation().await {
             sess.active_page = Some(page);
@@ -189,7 +217,7 @@ pub async fn get_url(sm: &SessionManager, session_id: Option<String>) -> Res {
 pub async fn get_dom(sm: &SessionManager, selector: Option<String>, depth: Option<u8>, interactive_only: Option<bool>, session_id: Option<String>) -> Res {
     with_page!(sm, session_id, |page| {
         if interactive_only.unwrap_or(false) {
-            let js = r#"Array.from(document.querySelectorAll('button,input,select,a,textarea')).map(el=>{const tag=el.tagName.toLowerCase();let sel=tag;if(el.id)sel='#'+el.id;else if(el.getAttribute('name'))sel=tag+'[name="'+el.getAttribute('name')+'"]';else if(el.className)sel=tag+'.'+el.className.toString().trim().split(/\s+/).join('.');const text=(el.textContent||el.value||el.placeholder||'').trim().replace(/\s+/g,' ').slice(0,100);return tag+','+sel+','+text;}).join('\n')"#;
+            let js = r#"JSON.stringify(Array.from(document.querySelectorAll('button,input,select,a,textarea')).map(el=>{const tag=el.tagName.toLowerCase();let sel=tag;if(el.id)sel='#'+el.id;else if(el.getAttribute('name'))sel=tag+'[name="'+el.getAttribute('name')+'"]';else if(el.className)sel=tag+'.'+el.className.toString().trim().split(/\s+/).join('.');const text=(el.textContent||el.value||el.placeholder||'').trim().replace(/\s+/g,' ').slice(0,100);return {tag,selector:sel,text};}))"#;
             return match page.evaluate(js).await {
                 Ok(v) => (v.into_value::<String>().unwrap_or_default(), None),
                 Err(e) => e500(e),
@@ -231,6 +259,47 @@ pub async fn get_dom(sm: &SessionManager, selector: Option<String>, depth: Optio
     })
 }
 
+// ── get_text ──────────────────────────────────────────────────────────────────
+
+pub async fn get_text(sm: &SessionManager, selector: String, session_id: Option<String>) -> Res {
+    with_page!(sm, session_id, |page| {
+        let js = format!(
+            "(function(){{const el=document.querySelector({:?});if(!el)return null;return (el.textContent||el.innerText||'').trim().replace(/\\s+/g,' ');}})()",
+            selector
+        );
+        match page.evaluate(js).await {
+            Ok(v) => {
+                let val = v.into_value::<serde_json::Value>().unwrap_or(serde_json::Value::Null);
+                if val.is_null() { e404(format!("element not found: {selector}")) }
+                else { (val.as_str().unwrap_or("").to_string(), None) }
+            }
+            Err(e) => e500(e),
+        }
+    })
+}
+
+// ── get_attr ──────────────────────────────────────────────────────────────────
+
+pub async fn get_attr(sm: &SessionManager, selector: String, attr: String, session_id: Option<String>) -> Res {
+    with_page!(sm, session_id, |page| {
+        let js = format!(
+            "(function(){{const el=document.querySelector({:?});if(!el)return null;const v=el.getAttribute({:?});return v;}})()",
+            selector, attr
+        );
+        match page.evaluate(js).await {
+            Ok(v) => {
+                let val = v.into_value::<serde_json::Value>().unwrap_or(serde_json::Value::Null);
+                if val.is_null() {
+                    e404(format!("element not found or attr missing: {selector}[{attr}]"))
+                } else {
+                    (val.as_str().unwrap_or("").to_string(), None)
+                }
+            }
+            Err(e) => e500(e),
+        }
+    })
+}
+
 // ── click ─────────────────────────────────────────────────────────────────────
 
 pub async fn click(sm: &SessionManager, selector: String, session_id: Option<String>) -> Res {
@@ -255,17 +324,25 @@ pub async fn hover(sm: &SessionManager, selector: String, session_id: Option<Str
 
 // ── type ──────────────────────────────────────────────────────────────────────
 
-pub async fn type_input(sm: &SessionManager, selector: String, text: String, clear: Option<bool>, session_id: Option<String>) -> Res {
+pub async fn type_input(sm: &SessionManager, selector: String, text: String, clear: Option<bool>, delay_ms: Option<u64>, session_id: Option<String>) -> Res {
     with_page!(sm, session_id, |page| {
-        match page.find_element(&selector).await {
-            Ok(el) => {
-                if clear.unwrap_or(false) {
-                    let js = format!("document.querySelector({:?}).value=''", selector);
-                    let _ = page.evaluate(js).await;
-                }
-                match el.type_str(&text).await { Ok(_) => ok(), Err(e) => e500(e) }
+        let el = match page.find_element(&selector).await {
+            Ok(e) => e,
+            Err(_) => return e404(format!("element not found: {selector}")),
+        };
+        if clear.unwrap_or(false) {
+            let js = format!("document.querySelector({:?}).value=''", selector);
+            let _ = page.evaluate(js).await;
+        }
+        if let Some(delay) = delay_ms {
+            let dur = Duration::from_millis(delay);
+            for ch in text.chars() {
+                if let Err(e) = el.type_str(&ch.to_string()).await { return e500(e); }
+                tokio::time::sleep(dur).await;
             }
-            Err(_) => e404(format!("element not found: {selector}")),
+            ok()
+        } else {
+            match el.type_str(&text).await { Ok(_) => ok(), Err(e) => e500(e) }
         }
     })
 }
@@ -338,7 +415,7 @@ pub async fn wait_for(sm: &SessionManager, selector: String, timeout_ms: Option<
     };
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
     let start = std::time::Instant::now();
-    let hidden = state.as_deref() == Some("hidden");
+    let target = state.as_deref().unwrap_or("visible");
 
     loop {
         let page = {
@@ -347,13 +424,18 @@ pub async fn wait_for(sm: &SessionManager, selector: String, timeout_ms: Option<
         };
         if let Some(page) = page {
             let js = format!(
-                "(function(){{const el=document.querySelector({:?});if(!el)return 'missing';const vis=el.offsetParent!==null||el.getBoundingClientRect().width>0;return vis?'visible':'hidden';}})()",
+                "(function(){{const el=document.querySelector({:?});if(!el)return 'detached';const vis=el.offsetParent!==null||el.getBoundingClientRect().width>0;return vis?'visible':'hidden';}})()",
                 selector
             );
             if let Ok(v) = page.evaluate(js).await {
                 let s = v.into_value::<String>().unwrap_or_default();
-                let done = if hidden { s == "hidden" || s == "missing" }
-                           else     { s == "visible" };
+                let done = match target {
+                    "visible"  => s == "visible",
+                    "hidden"   => s == "hidden" || s == "detached",
+                    "attached" => s == "visible" || s == "hidden",
+                    "detached" => s == "detached",
+                    _          => s == "visible",
+                };
                 if done { return ok(); }
             }
         }
@@ -364,7 +446,7 @@ pub async fn wait_for(sm: &SessionManager, selector: String, timeout_ms: Option<
 
 // ── web_screenshot ────────────────────────────────────────────────────────────
 
-pub async fn web_screenshot(sm: &SessionManager, full_page: Option<bool>, _selector: Option<String>, scale: Option<f32>, quality: Option<u8>, session_id: Option<String>) -> Res {
+pub async fn web_screenshot(sm: &SessionManager, full_page: Option<bool>, selector: Option<String>, scale: Option<f32>, quality: Option<u8>, session_id: Option<String>) -> Res {
     use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as B64;
@@ -373,11 +455,43 @@ pub async fn web_screenshot(sm: &SessionManager, full_page: Option<bool>, _selec
 
     with_page!(sm, session_id, |page| {
         let q = quality.unwrap_or(80) as i64;
-        let params = chromiumoxide::page::ScreenshotParams::builder()
+
+        let mut params_builder = chromiumoxide::page::ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Jpeg)
-            .quality(q)
-            .full_page(full_page.unwrap_or(false))
-            .build();
+            .quality(q);
+
+        if let Some(ref sel) = selector {
+            let js = format!(
+                "(function(){{const el=document.querySelector({:?});if(!el)return null;const r=el.getBoundingClientRect();return JSON.stringify({{x:r.left+window.scrollX,y:r.top+window.scrollY,width:r.width,height:r.height}});}})()",
+                sel
+            );
+            let val = match page.evaluate(js).await {
+                Ok(v) => v.into_value::<serde_json::Value>().unwrap_or(serde_json::Value::Null),
+                Err(e) => return e500(e),
+            };
+            if val.is_null() {
+                return e404(format!("element not found: {sel}"));
+            }
+            let rect_str = match val.as_str() {
+                Some(s) => s.to_string(),
+                None => val.to_string(),
+            };
+            let rect: serde_json::Value = match serde_json::from_str(&rect_str) {
+                Ok(v) => v,
+                Err(e) => return e500(e),
+            };
+            let x     = rect["x"].as_f64().unwrap_or(0.0);
+            let y     = rect["y"].as_f64().unwrap_or(0.0);
+            let width = rect["width"].as_f64().unwrap_or(0.0);
+            let height = rect["height"].as_f64().unwrap_or(0.0);
+            use chromiumoxide::cdp::browser_protocol::page::Viewport;
+            let viewport = Viewport { x, y, width, height, scale: 1.0 };
+            params_builder = params_builder.clip(viewport);
+        } else {
+            params_builder = params_builder.full_page(full_page.unwrap_or(false));
+        }
+
+        let params = params_builder.build();
 
         let bytes = match page.screenshot(params).await {
             Ok(b) => b,
@@ -423,6 +537,31 @@ pub async fn evaluate(sm: &SessionManager, script: String, session_id: Option<St
                 };
                 (result, None)
             }
+            Err(e) => e500(e),
+        }
+    })
+}
+
+// ── dialog_handle ─────────────────────────────────────────────────────────────
+
+pub async fn dialog_handle(sm: &SessionManager, action: String, text: Option<String>, session_id: Option<String>) -> Res {
+    with_page!(sm, session_id, |page| {
+        use chromiumoxide::cdp::browser_protocol::page::HandleJavaScriptDialogParams;
+        let accept = match action.as_str() {
+            "accept"  => true,
+            "dismiss" => false,
+            _ => return e400("action must be 'accept' or 'dismiss'"),
+        };
+        let mut params_json = serde_json::json!({ "accept": accept });
+        if let Some(t) = text {
+            params_json["promptText"] = serde_json::Value::String(t);
+        }
+        let params: HandleJavaScriptDialogParams = match serde_json::from_value(params_json) {
+            Ok(p) => p,
+            Err(e) => return e500(e),
+        };
+        match page.execute(params).await {
+            Ok(_) => ok(),
             Err(e) => e500(e),
         }
     })
@@ -538,6 +677,31 @@ pub async fn cookie_get(sm: &SessionManager, url: Option<String>, name: Option<S
             .collect();
         match serde_json::to_string(&entries) {
             Ok(s) => (s, None),
+            Err(e) => e500(e),
+        }
+    })
+}
+
+// ── cookie_set ────────────────────────────────────────────────────────────────
+
+pub async fn cookie_set(sm: &SessionManager, name: String, value: String, url: Option<String>, domain: Option<String>, path: Option<String>, session_id: Option<String>) -> Res {
+    with_page!(sm, session_id, |page| {
+        use chromiumoxide::cdp::browser_protocol::network::{CookieParam, SetCookiesParams};
+        let mut cookie_json = serde_json::json!({
+            "name": name,
+            "value": value,
+        });
+        if let Some(u) = url    { cookie_json["url"]    = serde_json::Value::String(u); }
+        if let Some(d) = domain { cookie_json["domain"] = serde_json::Value::String(d); }
+        if let Some(p) = path   { cookie_json["path"]   = serde_json::Value::String(p); }
+
+        let cookie: CookieParam = match serde_json::from_value(cookie_json) {
+            Ok(c) => c,
+            Err(e) => return e500(e),
+        };
+        let params = SetCookiesParams { cookies: vec![cookie] };
+        match page.execute(params).await {
+            Ok(_) => ok(),
             Err(e) => e500(e),
         }
     })

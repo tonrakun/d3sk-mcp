@@ -23,7 +23,7 @@ pub async fn screenshot(
     scale: Option<f32>,
     quality: Option<u8>,
 ) -> Res {
-    let scale = scale.unwrap_or(1.0).clamp(0.1, 1.0);
+    let scale = scale.unwrap_or(1.0).clamp(0.1, 2.0);
     let quality = quality.unwrap_or(80).clamp(1, 100);
 
     let raw = match target.as_str() {
@@ -100,16 +100,17 @@ pub async fn mouse_scroll(x: i32, y: i32, delta_x: i32, delta_y: i32, unit: Stri
     ok()
 }
 
-pub async fn mouse_drag(from_x: i32, from_y: i32, to_x: i32, to_y: i32) -> Res {
+pub async fn mouse_drag(from_x: i32, from_y: i32, to_x: i32, to_y: i32, duration_ms: Option<u64>) -> Res {
+    let half = std::time::Duration::from_millis(duration_ms.unwrap_or(100) / 2);
     let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
     if let Err(e) = eg.move_mouse(from_x, from_y, Coordinate::Abs) { return e500(e); }
     if let Err(e) = eg.button(Button::Left, Direction::Press) { return e500(e); }
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    tokio::time::sleep(half).await;
     if let Err(e) = eg.move_mouse(to_x, to_y, Coordinate::Abs) {
         let _ = eg.button(Button::Left, Direction::Release);
         return e500(e);
     }
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    tokio::time::sleep(half).await;
     match eg.button(Button::Left, Direction::Release) { Ok(_) => ok(), Err(e) => e500(e) }
 }
 
@@ -157,9 +158,19 @@ pub async fn key_press(keys: Vec<String>) -> Res {
     ok()
 }
 
-pub async fn type_text(text: String) -> Res {
-    let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
-    match eg.text(&text) { Ok(_) => ok(), Err(e) => e500(e) }
+pub async fn type_text(text: String, delay_ms: Option<u64>) -> Res {
+    if let Some(delay) = delay_ms {
+        let dur = std::time::Duration::from_millis(delay);
+        for ch in text.chars() {
+            let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
+            if let Err(e) = eg.text(&ch.to_string()) { return e500(e); }
+            tokio::time::sleep(dur).await;
+        }
+        ok()
+    } else {
+        let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
+        match eg.text(&text) { Ok(_) => ok(), Err(e) => e500(e) }
+    }
 }
 
 // ── clipboard ─────────────────────────────────────────────────────────────────
@@ -249,6 +260,18 @@ pub async fn file_move(from: String, to: String) -> Res {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => e404(format!("{from}: not found")),
         Err(e) => e500(e),
     }
+}
+
+pub async fn file_copy(from: String, to: String) -> Res {
+    match fs::copy(&from, &to) {
+        Ok(_) => ok(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => e404(format!("{from}: not found")),
+        Err(e) => e500(e),
+    }
+}
+
+pub async fn file_exists(path: String) -> Res {
+    (Path::new(&path).exists().to_string(), None)
 }
 
 // ── app ───────────────────────────────────────────────────────────────────────
@@ -369,7 +392,7 @@ pub async fn app_close(pid: u32, force: Option<bool>) -> Res {
 #[derive(Serialize)]
 struct ShellResult { stdout: String, stderr: String, exit_code: i32 }
 
-pub async fn shell(cmd: String, timeout_ms: Option<u64>) -> Res {
+pub async fn shell(cmd: String, timeout_ms: Option<u64>, cwd: Option<String>) -> Res {
     let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(30_000));
 
     #[cfg(windows)]
@@ -384,6 +407,10 @@ pub async fn shell(cmd: String, timeout_ms: Option<u64>) -> Res {
         c.args(["-c", &cmd]);
         c
     };
+
+    if let Some(ref dir) = cwd {
+        builder.current_dir(dir);
+    }
     builder.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
 
     let child = match builder.spawn() {
