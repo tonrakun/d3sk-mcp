@@ -82,8 +82,10 @@ pub async fn mouse_click(x: i32, y: i32, action: String) -> Res {
         },
         "double" => {
             if let Err(e) = eg.button(Button::Left, Direction::Click) { return e500(e); }
+            drop(eg);
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            match eg.button(Button::Left, Direction::Click) { Ok(_) => ok(), Err(e) => e500(e) }
+            let mut eg2 = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
+            match eg2.button(Button::Left, Direction::Click) { Ok(_) => ok(), Err(e) => e500(e) }
         }
         "right"  => match eg.button(Button::Right,  Direction::Click) { Ok(_) => ok(), Err(e) => e500(e) },
         "middle" => match eg.button(Button::Middle, Direction::Click) { Ok(_) => ok(), Err(e) => e500(e) },
@@ -102,15 +104,21 @@ pub async fn mouse_scroll(x: i32, y: i32, delta_x: i32, delta_y: i32, unit: Stri
 
 pub async fn mouse_drag(from_x: i32, from_y: i32, to_x: i32, to_y: i32, duration_ms: Option<u64>) -> Res {
     let half = std::time::Duration::from_millis(duration_ms.unwrap_or(100) / 2);
-    let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
-    if let Err(e) = eg.move_mouse(from_x, from_y, Coordinate::Abs) { return e500(e); }
-    if let Err(e) = eg.button(Button::Left, Direction::Press) { return e500(e); }
-    tokio::time::sleep(half).await;
-    if let Err(e) = eg.move_mouse(to_x, to_y, Coordinate::Abs) {
-        let _ = eg.button(Button::Left, Direction::Release);
-        return e500(e);
+    {
+        let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
+        if let Err(e) = eg.move_mouse(from_x, from_y, Coordinate::Abs) { return e500(e); }
+        if let Err(e) = eg.button(Button::Left, Direction::Press) { return e500(e); }
     }
     tokio::time::sleep(half).await;
+    {
+        let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
+        if let Err(e) = eg.move_mouse(to_x, to_y, Coordinate::Abs) {
+            let _ = eg.button(Button::Left, Direction::Release);
+            return e500(e);
+        }
+    }
+    tokio::time::sleep(half).await;
+    let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
     match eg.button(Button::Left, Direction::Release) { Ok(_) => ok(), Err(e) => e500(e) }
 }
 
@@ -162,8 +170,10 @@ pub async fn type_text(text: String, delay_ms: Option<u64>) -> Res {
     if let Some(delay) = delay_ms {
         let dur = std::time::Duration::from_millis(delay);
         for ch in text.chars() {
-            let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
-            if let Err(e) = eg.text(&ch.to_string()) { return e500(e); }
+            {
+                let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
+                if let Err(e) = eg.text(&ch.to_string()) { return e500(e); }
+            }
             tokio::time::sleep(dur).await;
         }
         ok()
