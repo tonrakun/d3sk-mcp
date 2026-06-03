@@ -35,7 +35,7 @@ pub async fn screenshot(
         "window" => {
             let title = match window_title { Some(t) => t, None => return e400("window_title required") };
             let windows = match Window::all() { Ok(w) => w, Err(e) => return e500(e) };
-            let win = windows.iter().find(|w| w.title().contains(title.as_str()));
+            let win = windows.iter().find(|w| w.title().unwrap_or_default().contains(title.as_str()));
             match win {
                 Some(w) => match w.capture_image() { Ok(img) => img, Err(e) => return e500(e) },
                 None => return e404(format!("window not found: {title}")),

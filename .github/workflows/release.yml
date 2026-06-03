@@ -62,6 +62,7 @@ jobs:
             libx11-dev libxext-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libxi-dev libxss-dev libxtst-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libdbus-1-dev \
             pkg-config
 
       - name: Build
