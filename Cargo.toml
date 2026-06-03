@@ -14,7 +14,7 @@ serde_json = "1"
 schemars = "1"
 enigo = "0.3"
 xcap = "0.9"
-chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
+chromiumoxide = { version = "0.8", features = ["tokio-runtime"] }
 base64 = "0.22"
 arboard = "3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
