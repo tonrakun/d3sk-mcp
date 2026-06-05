@@ -141,6 +141,8 @@ Write-Host @"
 }
 "@
 
+Read-Host "Press Enter to exit"
+
 } catch {
     Write-Host ""
     Write-Host "ERROR: $_" -ForegroundColor Red

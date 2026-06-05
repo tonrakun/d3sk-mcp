@@ -63,6 +63,25 @@ macro_rules! with_page {
     }};
 }
 
+macro_rules! with_session {
+    ($sm:expr, $sid:expr, mut $sess:ident, $body:expr) => {{
+        let arc = match $sm.get($sid.as_deref()).await {
+            Some(a) => a,
+            None => return e404("session not found"),
+        };
+        let mut $sess = arc.lock().await;
+        $body
+    }};
+    ($sm:expr, $sid:expr, $sess:ident, $body:expr) => {{
+        let arc = match $sm.get($sid.as_deref()).await {
+            Some(a) => a,
+            None => return e404("session not found"),
+        };
+        let $sess = arc.lock().await;
+        $body
+    }};
+}
+
 // ── browser_connect ───────────────────────────────────────────────────────────
 
 pub async fn browser_connect(sm: &SessionManager, port: Option<u16>, _browser: Option<String>) -> Res {
@@ -139,11 +158,16 @@ pub async fn browser_close(sm: &SessionManager, session_id: Option<String>) -> R
 // ── navigate ──────────────────────────────────────────────────────────────────
 
 pub async fn navigate(sm: &SessionManager, url: Option<String>, action: Option<String>, wait: Option<String>, session_id: Option<String>) -> Res {
+    if url.is_none() && action.is_none() {
+        return e400("url or action required");
+    }
+
+    let arc = match sm.get(session_id.as_deref()).await {
+        Some(a) => a,
+        None => return e404("session not found"),
+    };
+
     if let Some(act) = action {
-        let arc = match sm.get(session_id.as_deref()).await {
-            Some(a) => a,
-            None => return e404("session not found"),
-        };
         let page = {
             let guard = arc.lock().await;
             match guard.active_page.as_ref() {
@@ -164,15 +188,7 @@ pub async fn navigate(sm: &SessionManager, url: Option<String>, action: Option<S
         return ok();
     }
 
-    let url = match url {
-        Some(u) => u,
-        None => return e400("url or action required"),
-    };
-
-    let arc = match sm.get(session_id.as_deref()).await {
-        Some(a) => a,
-        None => return e404("session not found"),
-    };
+    let url = url.unwrap();
     let mut sess = arc.lock().await;
 
     let page = match sess.active_page.take() {
@@ -573,93 +589,77 @@ pub async fn dialog_handle(sm: &SessionManager, action: String, text: Option<Str
 // ── tab_list ──────────────────────────────────────────────────────────────────
 
 pub async fn tab_list(sm: &SessionManager, session_id: Option<String>) -> Res {
-    let arc = match sm.get(session_id.as_deref()).await {
-        Some(a) => a,
-        None => return e404("session not found"),
-    };
-    let sess = arc.lock().await;
-    let pages = match sess.browser.pages().await {
-        Ok(p) => p,
-        Err(e) => return e500(e),
-    };
-
-    let mut entries = Vec::new();
-    for page in &pages {
-        let id    = page.target_id().inner().to_string();
-        let url   = page.evaluate("location.href").await
-            .ok().and_then(|v| v.into_value::<String>().ok()).unwrap_or_default();
-        let title = page.evaluate("document.title").await
-            .ok().and_then(|v| v.into_value::<String>().ok()).unwrap_or_default();
-        entries.push(serde_json::json!({"id": id, "url": url, "title": title}));
-    }
-    match serde_json::to_string(&entries) {
-        Ok(s) => (s, None),
-        Err(e) => e500(e),
-    }
+    with_session!(sm, session_id, sess, {
+        let pages = match sess.browser.pages().await {
+            Ok(p) => p,
+            Err(e) => return e500(e),
+        };
+        let mut entries = Vec::new();
+        for page in &pages {
+            let id    = page.target_id().inner().to_string();
+            let url   = page.evaluate("location.href").await
+                .ok().and_then(|v| v.into_value::<String>().ok()).unwrap_or_default();
+            let title = page.evaluate("document.title").await
+                .ok().and_then(|v| v.into_value::<String>().ok()).unwrap_or_default();
+            entries.push(serde_json::json!({"id": id, "url": url, "title": title}));
+        }
+        match serde_json::to_string(&entries) {
+            Ok(s) => (s, None),
+            Err(e) => e500(e),
+        }
+    })
 }
 
 // ── tab_new ───────────────────────────────────────────────────────────────────
 
 pub async fn tab_new(sm: &SessionManager, url: Option<String>, session_id: Option<String>) -> Res {
-    let arc = match sm.get(session_id.as_deref()).await {
-        Some(a) => a,
-        None => return e404("session not found"),
-    };
-    let mut sess = arc.lock().await;
-    let target_url = url.as_deref().unwrap_or("about:blank");
-    match sess.browser.new_page(target_url).await {
-        Ok(page) => {
-            let id = page.target_id().inner().to_string();
-            sess.active_page = Some(page);
-            (id, None)
+    with_session!(sm, session_id, mut sess, {
+        let target_url = url.as_deref().unwrap_or("about:blank");
+        match sess.browser.new_page(target_url).await {
+            Ok(page) => {
+                let id = page.target_id().inner().to_string();
+                sess.active_page = Some(page);
+                (id, None)
+            }
+            Err(e) => e500(e),
         }
-        Err(e) => e500(e),
-    }
+    })
 }
 
 // ── tab_switch ────────────────────────────────────────────────────────────────
 
 pub async fn tab_switch(sm: &SessionManager, id: String, session_id: Option<String>) -> Res {
-    let arc = match sm.get(session_id.as_deref()).await {
-        Some(a) => a,
-        None => return e404("session not found"),
-    };
-    let mut sess = arc.lock().await;
-    let pages = match sess.browser.pages().await {
-        Ok(p) => p,
-        Err(e) => return e500(e),
-    };
-    let page = pages.into_iter().find(|p| p.target_id().inner() == id.as_str());
-    match page {
-        Some(p) => { sess.active_page = Some(p); ok() }
-        None    => e404(format!("tab not found: {id}")),
-    }
+    with_session!(sm, session_id, mut sess, {
+        let pages = match sess.browser.pages().await {
+            Ok(p) => p,
+            Err(e) => return e500(e),
+        };
+        match pages.into_iter().find(|p| p.target_id().inner() == id.as_str()) {
+            Some(p) => { sess.active_page = Some(p); ok() }
+            None    => e404(format!("tab not found: {id}")),
+        }
+    })
 }
 
 // ── tab_close ─────────────────────────────────────────────────────────────────
 
 pub async fn tab_close(sm: &SessionManager, id: String, session_id: Option<String>) -> Res {
-    let arc = match sm.get(session_id.as_deref()).await {
-        Some(a) => a,
-        None => return e404("session not found"),
-    };
-    let mut sess = arc.lock().await;
-    let pages = match sess.browser.pages().await {
-        Ok(p) => p,
-        Err(e) => return e500(e),
-    };
-    let found = pages.iter().find(|p| p.target_id().inner() == id.as_str());
-    match found {
-        None => return e404(format!("tab not found: {id}")),
-        Some(p) => {
-            if let Err(e) = p.clone().close().await { return e500(e); }
+    with_session!(sm, session_id, mut sess, {
+        let pages = match sess.browser.pages().await {
+            Ok(p) => p,
+            Err(e) => return e500(e),
+        };
+        let found = pages.iter().find(|p| p.target_id().inner() == id.as_str());
+        match found {
+            None    => return e404(format!("tab not found: {id}")),
+            Some(p) => { if let Err(e) = p.clone().close().await { return e500(e); } }
         }
-    }
-    if sess.active_page.as_ref().map(|p| p.target_id().inner().to_string()).as_deref() == Some(id.as_str()) {
-        let remaining = sess.browser.pages().await.unwrap_or_default();
-        sess.active_page = remaining.into_iter().next();
-    }
-    ok()
+        if sess.active_page.as_ref().map(|p| p.target_id().inner().to_string()).as_deref() == Some(id.as_str()) {
+            let remaining = sess.browser.pages().await.unwrap_or_default();
+            sess.active_page = remaining.into_iter().next();
+        }
+        ok()
+    })
 }
 
 // ── cookie_get ────────────────────────────────────────────────────────────────
