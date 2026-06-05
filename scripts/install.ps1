@@ -15,6 +15,8 @@ $INSTALL = Join-Path $env:USERPROFILE ".d3sk-mcp"
 $ASSET   = "d3sk-mcp-windows-x86_64.zip"
 $BINARY  = "d3sk-mcp.exe"
 
+try {
+
 Write-Host "=== D3SK-MCP Installer ===" -ForegroundColor Cyan
 
 # Fetch latest release metadata
@@ -138,3 +140,11 @@ Write-Host @"
   }
 }
 "@
+
+} catch {
+    Write-Host ""
+    Write-Host "ERROR: $_" -ForegroundColor Red
+    Write-Host ""
+    Read-Host "Press Enter to exit"
+    exit 1
+}
