@@ -15,30 +15,47 @@ Desktop automation MCP server written in Rust. Gives AI agents full control over
 
 **Browser control** (via Chrome DevTools Protocol)
 - Connect to a running browser or launch one
-- Navigate, get URL/title
-- DOM inspection (full HTML or interactive-elements-only)
+- Navigate, history back/forward/reload, get URL/title
+- DOM inspection (full HTML, depth-limited, or interactive-elements-only JSON)
 - Element interaction — click, hover, type, select, check, scroll
-- Wait for element visibility
-- Screenshots (viewport or full page)
+- Get element text or attribute value
+- Wait for element visibility / attachment
+- Screenshots (viewport, full page, or element crop)
 - JavaScript evaluation
+- Dialog handling (alert / confirm / prompt)
 - Tab management — list, open, switch, close
-- Cookie retrieval
+- Cookie get / set
 
 **Batch execution**
 - Run multiple tools in a single call with `stop` or `continue` on error
 
+## Install
+
+**Windows** — run in PowerShell:
+
+```powershell
+irm https://github.com/tonrakun/d3sk-mcp/releases/latest/download/install.ps1 | iex
+```
+
+**macOS / Linux**:
+
+```sh
+curl -fsSL https://github.com/tonrakun/d3sk-mcp/releases/latest/download/install.sh | sh
+```
+
+The installer downloads the latest binary to `~/.d3sk-mcp/` and writes an `updater` script that auto-updates on every MCP session start. Point Claude Desktop at the updater script (path is printed at the end of the install).
+
 ## Requirements
 
-- Rust 1.85+
 - For browser tools: Chromium-based browser (Chrome / Brave / Edge) with remote debugging enabled, or let the server launch one
 
-## Build
+## Build from source
 
 ```sh
 cargo build --release
 ```
 
-The binary is at `target/release/d3sk-mcp`.
+Requires Rust 1.85+. The binary is at `target/release/d3sk-mcp`.
 
 ## Usage
 
@@ -95,13 +112,13 @@ browser_open { "browser": "chrome" }
 
 | Tool | Key params | Returns |
 |------|-----------|---------|
-| `screenshot` | `target`: `"screen"`\|`"window"`, `window_title`, `scale`, `quality` | `<base64>,<w>,<h>` |
+| `screenshot` | `target`: `"screen"`\|`"window"`, `window_title`, `scale` (0.1-2.0), `quality` | `<base64>,<w>,<h>` |
 | `mouse_move` | `x`, `y` | `ok` |
 | `mouse_click` | `x`, `y`, `action`: `"single"`\|`"double"`\|`"right"`\|`"middle"` | `ok` |
 | `mouse_scroll` | `x`, `y`, `delta_x`, `delta_y`, `unit`: `"px"`\|`"lines"` | `ok` |
-| `mouse_drag` | `from_x`, `from_y`, `to_x`, `to_y` | `ok` |
+| `mouse_drag` | `from_x`, `from_y`, `to_x`, `to_y`, `duration_ms` | `ok` |
 | `key_press` | `keys`: e.g. `["ctrl","c"]` | `ok` |
-| `type_text` | `text` | `ok` |
+| `type_text` | `text`, `delay_ms` | `ok` |
 | `clipboard_get` | — | clipboard text |
 | `clipboard_set` | `text` | `ok` |
 | `file_read` | `path`, `encoding`: `"utf8"`\|`"base64"` | file content |
@@ -109,11 +126,13 @@ browser_open { "browser": "chrome" }
 | `file_list` | `path`, `recursive` | JSON `[{name, is_dir, size}]` |
 | `file_delete` | `path` | `ok` |
 | `file_move` | `from`, `to` | `ok` |
+| `file_copy` | `from`, `to` | `ok` |
+| `file_exists` | `path` | `"true"` \| `"false"` |
 | `app_launch` | `command`, `args` | PID |
 | `app_list` | — | JSON `[{pid, name, title}]` |
 | `app_focus` | `pid` or `title` | `ok` |
 | `app_close` | `pid`, `force` | `ok` |
-| `shell` | `cmd`, `timeout_ms` | JSON `{stdout, stderr, exit_code}` |
+| `shell` | `cmd`, `timeout_ms`, `cwd` | JSON `{stdout, stderr, exit_code}` |
 
 ### Web
 
@@ -124,23 +143,27 @@ All web tools accept an optional `session_id` (defaults to the first/only sessio
 | `browser_connect` | `port` (default 9222) | `session_id` |
 | `browser_open` | `browser`: `"chrome"`\|`"brave"`\|`"edge"`, `profile` | `session_id` |
 | `browser_close` | `session_id` | `ok` |
-| `navigate` | `url`, `wait`: `"load"`\|`"domcontentloaded"`\|`"networkidle"` | `ok` |
+| `navigate` | `url` or `action`: `"back"`\|`"forward"`\|`"reload"`, `wait`: `"load"`\|`"domcontentloaded"`\|`"networkidle"` | `ok` |
 | `get_url` | — | JSON `{url, title}` |
-| `get_dom` | `selector`, `depth`, `interactive_only` | HTML or depth-limited HTML or `tag,selector,text` lines |
+| `get_dom` | `selector`, `depth`, `interactive_only` | HTML / depth-limited HTML / JSON `[{tag, selector, text}]` |
+| `get_text` | `selector` | element text |
+| `get_attr` | `selector`, `attr` | attribute value |
 | `click` | `selector` | `ok` |
 | `hover` | `selector` | `ok` |
-| `type_input` | `selector`, `text`, `clear` | `ok` |
+| `type_input` | `selector`, `text`, `clear`, `delay_ms` | `ok` |
 | `web_select` | `selector`, `value` | `ok` |
 | `check` | `selector`, `checked` | `ok` |
 | `web_scroll` | `selector`, `delta_x`, `delta_y`, `unit` | `ok` |
-| `wait_for` | `selector`, `state`: `"visible"`\|`"hidden"`, `timeout_ms` | `ok` |
-| `web_screenshot` | `full_page`, `quality` | `<base64>,<w>,<h>` |
+| `wait_for` | `selector`, `state`: `"visible"`\|`"hidden"`\|`"attached"`\|`"detached"`, `timeout_ms` | `ok` |
+| `web_screenshot` | `full_page`, `selector`, `scale` (0.1-2.0), `quality` | `<base64>,<w>,<h>` |
 | `evaluate` | `script` | JS result as string |
+| `dialog_handle` | `action`: `"accept"`\|`"dismiss"`, `text` | `ok` |
 | `tab_list` | — | JSON `[{id, url, title}]` |
 | `tab_new` | `url` | tab id |
 | `tab_switch` | `id` | `ok` |
 | `tab_close` | `id` | `ok` |
 | `cookie_get` | `url`, `name` | JSON `[{name, value, domain}]` |
+| `cookie_set` | `name`, `value`, `url` or `domain`, `path` | `ok` |
 
 ## Error codes
 
@@ -151,7 +174,6 @@ All tools return one of these strings on failure. Call `get_last_error` immediat
 | `E400` | Bad arguments |
 | `E404` | Not found (file, window, element, session) |
 | `E408` | Timeout |
-| `E409` | Session conflict |
 | `E500` | Internal error |
 
 ## License

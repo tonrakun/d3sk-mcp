@@ -1,6 +1,6 @@
 [package]
 name = "d3sk-mcp"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "MCP server for AI agent PC and browser control"
 repository = "https://github.com/tonrakun/d3sk-mcp"
