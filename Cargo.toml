@@ -19,6 +19,4 @@ base64 = "0.22"
 arboard = "3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 anyhow = "1"
-thiserror = "2"
 futures = "0.3"
-tokio-stream = "0.1"

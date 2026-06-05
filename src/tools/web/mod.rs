@@ -182,9 +182,7 @@ pub async fn navigate(sm: &SessionManager, url: Option<String>, action: Option<S
             _ => return e400("action must be 'back', 'forward', or 'reload'"),
         };
         if let Err(e) = page.evaluate(js).await { return e500(e); }
-        if wait.as_deref() == Some("networkidle") {
-            if let Err(e) = page.wait_for_navigation().await { return e500(e); }
-        }
+        if wait.as_deref() == Some("networkidle") && let Err(e) = page.wait_for_navigation().await { return e500(e); }
         return ok();
     }
 
@@ -204,11 +202,9 @@ pub async fn navigate(sm: &SessionManager, url: Option<String>, action: Option<S
         return e500(e);
     }
 
-    if wait.as_deref() == Some("networkidle") {
-        if let Err(e) = page.wait_for_navigation().await {
-            sess.active_page = Some(page);
-            return e500(e);
-        }
+    if wait.as_deref() == Some("networkidle") && let Err(e) = page.wait_for_navigation().await {
+        sess.active_page = Some(page);
+        return e500(e);
     }
 
     sess.active_page = Some(page);
@@ -439,7 +435,7 @@ pub async fn wait_for(sm: &SessionManager, selector: String, timeout_ms: Option<
     loop {
         let page = {
             let guard = arc.lock().await;
-            guard.active_page.as_ref().map(|p| p.clone())
+            guard.active_page.clone()
         };
         if let Some(page) = page {
             let js = format!(

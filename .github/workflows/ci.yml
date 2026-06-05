@@ -47,6 +47,9 @@ jobs:
             libegl-dev libgbm-dev libxdo-dev \
             pkg-config
 
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
       - name: Build
         run: cargo build --release
 

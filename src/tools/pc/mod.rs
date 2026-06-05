@@ -95,8 +95,8 @@ pub async fn mouse_scroll(x: i32, y: i32, delta_x: i32, delta_y: i32, unit: Stri
     let mut eg = match new_enigo() { Ok(e) => e, Err(e) => return e500(e) };
     if let Err(e) = eg.move_mouse(x, y, Coordinate::Abs) { return e500(e); }
     let (dx, dy) = if unit == "px" { (delta_x / 40, delta_y / 40) } else { (delta_x, delta_y) };
-    if dy != 0 { if let Err(e) = eg.scroll(dy, Axis::Vertical)   { return e500(e); } }
-    if dx != 0 { if let Err(e) = eg.scroll(dx, Axis::Horizontal) { return e500(e); } }
+    if dy != 0 && let Err(e) = eg.scroll(dy, Axis::Vertical)   { return e500(e); }
+    if dx != 0 && let Err(e) = eg.scroll(dx, Axis::Horizontal) { return e500(e); }
     ok()
 }
 
@@ -213,11 +213,8 @@ pub async fn file_write(path: String, content: String, encoding: Option<String>)
         "base64" => match B64.decode(content.trim()) { Ok(b) => b, Err(e) => return e400(e) },
         _ => content.into_bytes(),
     };
-    if let Some(parent) = Path::new(&path).parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(e) = fs::create_dir_all(parent) { return e500(e); }
-        }
-    }
+    if let Some(parent) = Path::new(&path).parent() && !parent.as_os_str().is_empty()
+        && let Err(e) = fs::create_dir_all(parent) { return e500(e); }
     match fs::write(&path, &bytes) { Ok(_) => ok(), Err(e) => e500(e) }
 }
 
